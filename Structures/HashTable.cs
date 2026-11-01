@@ -158,16 +158,19 @@ class HashTable
     */
     {
         public bool Equals(Student x, Student y)
+        // devuelve true si los estudiantes tienen el mismo User, false en caso contrario
         {
             return x.User == y.User;
         }
 
         public int GetHashCode(Student obj)
+        // devuelve el código hash basado en la propiedad User del estudiante
         {
             return obj.User.GetHashCode();
         }
 
         public bool Contains(List<Student> list, Student student)
+        // devuelve true si la lista contiene un estudiante con el mismo User que el estudiante dado
         {
             foreach (var item in list)
             {
@@ -180,6 +183,7 @@ class HashTable
         }
 
         public List<Student> GetCommonStudents(List<Student> list1, List<Student> list2)
+        // devuelve una lista de estudiantes que están presentes en ambas listas
         {
             List<Student> commonStudents = new List<Student>();
             foreach (var student in list1)
@@ -193,6 +197,7 @@ class HashTable
         }
 
         public List<Student> GetStudentsNotInList(List<Student> list1, List<Student> list2)
+        // devuelve una lista de estudiantes que están en list1 pero no en list2
         {
             List<Student> notInList = new List<Student>();
             foreach (var student in list1)
@@ -206,6 +211,7 @@ class HashTable
         }
 
         public List<Student> GetFriendsWithAffinityAboveThreshold(List<Student> students, int threshold)
+        // devuelve una lista de estudiantes que tienen al menos un amigo con un puntaje de afinidad mayor que el umbral especificado
         {
             List<Student> result = new List<Student>();
             foreach (var student in students)
@@ -221,5 +227,123 @@ class HashTable
             }
             return result;
         }
+
+        public int CreateAffinityScore(Student student1, Student student2)
+        // crea un puntaje de afinidad entre dos estudiantes basado en cursos, año y carrera
+        {
+            int score = 0;
+            foreach (var course in student1.Courses)
+            {
+                if (student2.Courses.Contains(course))
+                {
+                    score += 1;
+                }
+            }
+            if (student1.Year == student2.Year)
+            {
+                score += 1;
+            }
+            if (student1.Career == student2.Career)
+            {
+                score += 1;
+            }
+            return score;
+        }
     }
 }
+
+class Trials
+{
+    public static void Run()
+    {
+        HashTable hashTable = new HashTable(10);
+        StudentComparer comparer = new StudentComparer();
+
+        // Insertar estudiantes
+        hashTable.Insert(new Student
+        {
+            User = "user1",
+            Name = "Alice",
+            Courses = new List<string>
+            {
+            }
+        });
+        hashTable.Insert(new Student
+        {
+            User = "user2",
+
+            Name = "Bob",
+            Courses = new List<string>
+            {
+                "Math",
+                "Physics"
+            }
+        });
+        hashTable.Insert(new Student
+        {
+            User = "user3",
+            Name = "Charlie",
+            Courses = new List<string>
+            {
+                "Math",
+                "Chemistry"
+            }
+        });
+
+        // Buscar estudiante
+        Student foundStudent = hashTable.Search("user2");
+        if (foundStudent != null)
+        {
+            Console.WriteLine($"Estudiante encontrado: {foundStudent.Name}");
+        }
+        else
+        {
+            Console.WriteLine("Estudiante no encontrado.");
+        }
+
+        // Editar estudiante
+        Student updatedStudent = new Student
+        {
+            User = "user2",
+
+
+            Name = "Bob Updated",
+            Courses = new List<string>
+            {
+                "Math",
+                "Physics",
+                "Biology"
+            }
+        };
+        bool editResult = hashTable.EditStudent("user2", updatedStudent);
+        if (editResult)
+        {
+            Console.WriteLine("Estudiante editado exitosamente.");
+        }
+        else
+        {
+            Console.WriteLine("No se pudo editar el estudiante.");
+        }
+
+        // Eliminar estudiante
+        bool deleteResult = hashTable.Delete("user3");
+        if (deleteResult)
+        {
+            Console.WriteLine("Estudiante eliminado exitosamente.");
+        }
+        else
+        {
+            Console.WriteLine("No se pudo eliminar el estudiante.");
+        }
+
+        // Obtener todos los estudiantes
+        List<Student> allStudents = hashTable.GetAllStudents();
+        Console.WriteLine("Todos los estudiantes:");
+        foreach (var student in allStudents)
+        {
+            Console.WriteLine($"User: {student.User}, Name: {student.Name}");
+        }
+        
+    }
+}
+        
