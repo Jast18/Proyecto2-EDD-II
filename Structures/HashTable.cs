@@ -3,7 +3,7 @@ class Student
 {
     public string User { get; set; } // Llave primaria, debe ser única
     public string Name { get; set; } // nombre completo del estudiante
-    public List<string> Affinity { get; set; } = new List<string>(); // Lista de 
+    public List<(string FriendNick, int Score)> Affinity { get; set; } = new List<(string, int)>(); // Lista de
     public List<string> Courses { get; set; } = new List<string>();
     public int Year { get; set; }
     public string Career { get; set; }
@@ -150,5 +150,76 @@ class HashTable
         return false;
     }
 
-    
+
+    class StudentComparer : IEqualityComparer<Student>
+    /*
+    Función auxiliar para comparar estudiantes por su propiedad User, utilizada para obtener estudiantes únicos y comunes entre listas
+    y para filtrar estudiantes con afinidad por encima de un umbral específico.
+    */
+    {
+        public bool Equals(Student x, Student y)
+        {
+            return x.User == y.User;
+        }
+
+        public int GetHashCode(Student obj)
+        {
+            return obj.User.GetHashCode();
+        }
+
+        public bool Contains(List<Student> list, Student student)
+        {
+            foreach (var item in list)
+            {
+                if (Equals(item, student))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        public List<Student> GetCommonStudents(List<Student> list1, List<Student> list2)
+        {
+            List<Student> commonStudents = new List<Student>();
+            foreach (var student in list1)
+            {
+                if (Contains(list2, student))
+                {
+                    commonStudents.Add(student);
+                }
+            }
+            return commonStudents;
+        }
+
+        public List<Student> GetStudentsNotInList(List<Student> list1, List<Student> list2)
+        {
+            List<Student> notInList = new List<Student>();
+            foreach (var student in list1)
+            {
+                if (!Contains(list2, student))
+                {
+                    notInList.Add(student);
+                }
+            }
+            return notInList;
+        }
+
+        public List<Student> GetFriendsWithAffinityAboveThreshold(List<Student> students, int threshold)
+        {
+            List<Student> result = new List<Student>();
+            foreach (var student in students)
+            {
+                foreach (var affinity in student.Affinity)
+                {
+                    if (affinity.Score > threshold)
+                    {
+                        result.Add(student);
+                        break;
+                    }
+                }
+            }
+            return result;
+        }
+    }
 }
