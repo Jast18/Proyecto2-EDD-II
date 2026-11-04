@@ -1,349 +1,154 @@
-//Almacena los perfiles por username en base a su propia cadena en funcion hash redimensionado y recorrido
-class Student
-{
-    public string User { get; set; } // Llave primaria, debe ser única
-    public string Name { get; set; } // nombre completo del estudiante
-    public List<(string FriendNick, int Score)> Affinity { get; set; } = new List<(string, int)>(); // Lista de
-    public List<string> Courses { get; set; } = new List<string>();
-    public int Year { get; set; }
-    public string Career { get; set; }
-}
+using System;
 
-class Node
-{
-    public Student Value { get; set; }
-    public Node Next { get; set; }
-
-    public Node(Student value)
-    {
-        Value = value;
-        Next = null;
-    }
-}
-
+// Estructura NUCLEAR: guarda el Student completo y lo localiza por su llave primaria (User).
+// Direccionamiento abierto, sondeo lineal con módulo (circular), marcas de borrado (tombstones)
+// y redimensionado cuando el factor de carga (ocupados + borrados) supera 0.7.
 class HashTable
 {
-    private Node[] table;
-    private int size;
+    private const byte VACIO = 0, OCUPADO = 1, BORRADO = 2;
 
-    public HashTable(int size)
+    private Student[] tabla;
+    private byte[] estado;
+    private int capacidad;
+    private int cantidad;   // elementos vivos
+    private int usados;     // vivos + tombstones (lo que realmente ensucia la tabla)
+
+    public int Cantidad { get { return cantidad; } }
+    public int Capacidad { get { return capacidad; } }
+    public double FactorCarga { get { return (double)usados / capacidad; } }
+
+    public HashTable(int capacidadInicial = 16)
     {
-        this.size = size;
-        table = new Node[size];
+        capacidad = Math.Max(8, capacidadInicial);
+        tabla = new Student[capacidad];
+        estado = new byte[capacidad];
     }
 
-    private void resizeTable()
+    // Devuelve la posición (o -1) y cuántos sondeos hicieron falta.
+    private (int pos, int sondeos) Localizar(string user)
     {
-        int newSize = size * 2;
-        Node[] newTable = new Node[newSize];
-
-        foreach (var node in table)
+        if (user == null) return (-1, 0);
+        int i = Util.Hash(user) % capacidad;
+        int sondeos = 0;
+        for (int n = 0; n < capacidad; n++)
         {
-            if (node != null)
-            {
-                int index = Hash(node.Value.User);
-                while (newTable[index] != null)
-                {
-                    index += 1;
-                }
-                newTable[index] = node;
-            }
+            sondeos++;
+            if (estado[i] == VACIO) return (-1, sondeos);
+            if (estado[i] == OCUPADO && tabla[i].User == user) return (i, sondeos);
+            i = (i + 1) % capacidad;
         }
-
-        table = newTable;
-        size = newSize;
+        return (-1, sondeos);
     }
 
-    private int CountNull()
+    private void Redimensionar(int nuevaCapacidad)
     {
-        int countNull = 0;
-        foreach (var valor in table)
+        Student[] viejaTabla = tabla;
+        byte[] viejoEstado = estado;
+
+        capacidad = nuevaCapacidad;
+        tabla = new Student[capacidad];
+        estado = new byte[capacidad];
+        cantidad = 0;
+        usados = 0;
+
+        for (int k = 0; k < viejaTabla.Length; k++)
         {
-            if (valor == null) countNull += 1;
+            if (viejoEstado[k] != OCUPADO) continue;
+            int i = Util.Hash(viejaTabla[k].User) % capacidad;
+            while (estado[i] != VACIO) i = (i + 1) % capacidad;
+            tabla[i] = viejaTabla[k];
+            estado[i] = OCUPADO;
+            cantidad++;
+            usados++;
         }
-        return countNull / size;
     }
 
-    // Función hash simple basada en el username
-    private int Hash(string key)
+    // Inserta. Si la llave ya existe NO sobrescribe (devuelve insertado=false y la posición existente).
+    public (bool insertado, int indice, int sondeos, bool redimensionado) Insertar(Student s)
     {
-        int hashValue = 0;
-        foreach (char c in key)
+        if (s == null || string.IsNullOrWhiteSpace(s.User)) return (false, -1, 0, false);
+        s.User = Util.Norm(s.User);
+
+        var existente = Localizar(s.User);
+        if (existente.pos >= 0) return (false, existente.pos, existente.sondeos, false);
+
+        bool redim = false;
+        if ((usados + 1) * 10 > capacidad * 7)
         {
-            hashValue += c;
+            // Si hay muchos tombstones basta con limpiar; si hay muchos vivos, se duplica.
+            Redimensionar((cantidad + 1) * 2 > capacidad ? capacidad * 2 : capacidad);
+            redim = true;
         }
-        return hashValue % size;
+
+        int i = Util.Hash(s.User) % capacidad;
+        int sondeos = 0;
+        int primerBorrado = -1;
+        while (true)
+        {
+            sondeos++;
+            if (estado[i] == VACIO)
+            {
+                int pos = primerBorrado >= 0 ? primerBorrado : i;
+                if (primerBorrado < 0) usados++;   // reutilizar un tombstone no ensucia más
+                tabla[pos] = s;
+                estado[pos] = OCUPADO;
+                cantidad++;
+                return (true, pos, sondeos, redim);
+            }
+            if (estado[i] == BORRADO && primerBorrado < 0) primerBorrado = i;
+            i = (i + 1) % capacidad;
+        }
     }
 
-    // Inserta un estudiante en la tabla hash
-    public bool Insert(Student student)
+    public (bool encontrado, Student estudiante, int sondeos) Buscar(string user)
     {
-        int index = Hash(student.User);
-        for (int i = 0; i < size; i++)
-        {
-            if (table[index] != null && table[index].Value.User == student.User) return false;
-            if (table[index] == null)
-            {
-                table[index] = new Node(student);
-                if (CountNull() <= 0.3) resizeTable();
-                return true;
-            }
-            index += 1;
-        }
-        return false;
+        var r = Localizar(Util.Norm(user));
+        return r.pos >= 0 ? (true, tabla[r.pos], r.sondeos) : (false, null, r.sondeos);
     }
 
-    public Student Search(string user)
+    public bool Existe(string user)
     {
-        int index = Hash(user);
-        for (int i = 0; i < size; i++)
-        {
-            if (table[index] == null) return null;
-            if (table[index].Value.User == user) return table[index].Value;
-            index += 1;
-        }
-        return null;
+        return Localizar(Util.Norm(user)).pos >= 0;
     }
 
-    public bool Delete(string user)
+    public (bool eliminado, Student estudiante) Eliminar(string user)
     {
-        int index = Hash(user);
-        for (int i = 0; i < size; i++)
-        {
-            if (table[index] == null) return false;
-            if (table[index].Value.User == user)
-            {
-                table[index] = null;
-                return true;
-            }
-            index += 1;
-        }
-        return false;
+        var r = Localizar(Util.Norm(user));
+        if (r.pos < 0) return (false, null);
+        Student quitado = tabla[r.pos];
+        tabla[r.pos] = null;
+        estado[r.pos] = BORRADO;   // tombstone: no rompe las cadenas de sondeo de otras llaves
+        cantidad--;
+        return (true, quitado);
     }
 
-    public List<Student> GetAllStudents()
+    // Reemplaza los datos manteniendo la llave primaria. Devuelve el registro anterior.
+    public (bool editado, Student anterior) Editar(string user, Student nuevo)
     {
-        List<Student> students = new List<Student>();
-        foreach (var node in table)
-        {
-            if (node != null)
-            {
-                students.Add(node.Value);
-            }
-        }
-        return students;
+        user = Util.Norm(user);
+        var r = Localizar(user);
+        if (r.pos < 0 || nuevo == null) return (false, null);
+        Student anterior = tabla[r.pos];
+        nuevo.User = user;                 // la llave primaria no se cambia
+        tabla[r.pos] = nuevo;
+        return (true, anterior);
     }
 
-    public bool EditStudent(string user, Student updatedStudent)
+    // Contador de visitas (insumo de la recomendación por visitas frecuentes).
+    public (bool exito, int visitas) RegistrarVisita(string user)
     {
-        int index = Hash(user);
-        for (int i = 0; i < size; i++)
-        {
-            if (table[index] == null) return false;
-            if (table[index].Value.User == user)
-            {
-                table[index].Value = updatedStudent;
-                return true;
-            }
-            index += 1;
-        }
-        return false;
+        var r = Localizar(Util.Norm(user));
+        if (r.pos < 0) return (false, 0);
+        tabla[r.pos].Visits++;
+        return (true, tabla[r.pos].Visits);
     }
 
-
-    class StudentComparer : IEqualityComparer<Student>
-    /*
-    Función auxiliar para comparar estudiantes por su propiedad User, utilizada para obtener estudiantes únicos y comunes entre listas
-    y para filtrar estudiantes con afinidad por encima de un umbral específico.
-    */
+    public Student[] ObtenerTodos()
     {
-        public bool Equals(Student x, Student y)
-        // devuelve true si los estudiantes tienen el mismo User, false en caso contrario
-        {
-            return x.User == y.User;
-        }
-
-        public int GetHashCode(Student obj)
-        // devuelve el código hash basado en la propiedad User del estudiante
-        {
-            return obj.User.GetHashCode();
-        }
-
-        public bool Contains(List<Student> list, Student student)
-        // devuelve true si la lista contiene un estudiante con el mismo User que el estudiante dado
-        {
-            foreach (var item in list)
-            {
-                if (Equals(item, student))
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        public List<Student> GetCommonStudents(List<Student> list1, List<Student> list2)
-        // devuelve una lista de estudiantes que están presentes en ambas listas
-        {
-            List<Student> commonStudents = new List<Student>();
-            foreach (var student in list1)
-            {
-                if (Contains(list2, student))
-                {
-                    commonStudents.Add(student);
-                }
-            }
-            return commonStudents;
-        }
-
-        public List<Student> GetStudentsNotInList(List<Student> list1, List<Student> list2)
-        // devuelve una lista de estudiantes que están en list1 pero no en list2
-        {
-            List<Student> notInList = new List<Student>();
-            foreach (var student in list1)
-            {
-                if (!Contains(list2, student))
-                {
-                    notInList.Add(student);
-                }
-            }
-            return notInList;
-        }
-
-        public List<Student> GetFriendsWithAffinityAboveThreshold(List<Student> students, int threshold)
-        // devuelve una lista de estudiantes que tienen al menos un amigo con un puntaje de afinidad mayor que el umbral especificado
-        {
-            List<Student> result = new List<Student>();
-            foreach (var student in students)
-            {
-                foreach (var affinity in student.Affinity)
-                {
-                    if (affinity.Score > threshold)
-                    {
-                        result.Add(student);
-                        break;
-                    }
-                }
-            }
-            return result;
-        }
-
-        public int CreateAffinityScore(Student student1, Student student2)
-        // crea un puntaje de afinidad entre dos estudiantes basado en cursos, año y carrera
-        {
-            int score = 0;
-            foreach (var course in student1.Courses)
-            {
-                if (student2.Courses.Contains(course))
-                {
-                    score += 1;
-                }
-            }
-            if (student1.Year == student2.Year)
-            {
-                score += 1;
-            }
-            if (student1.Career == student2.Career)
-            {
-                score += 1;
-            }
-            return score;
-        }
+        Student[] res = new Student[cantidad];
+        int n = 0;
+        for (int i = 0; i < capacidad; i++)
+            if (estado[i] == OCUPADO) res[n++] = tabla[i];
+        return res;
     }
 }
-
-class Trials
-{
-    public static void Run()
-    {
-        HashTable hashTable = new HashTable(10);
-        StudentComparer comparer = new StudentComparer();
-
-        // Insertar estudiantes
-        hashTable.Insert(new Student
-        {
-            User = "user1",
-            Name = "Alice",
-            Courses = new List<string>
-            {
-            }
-        });
-        hashTable.Insert(new Student
-        {
-            User = "user2",
-
-            Name = "Bob",
-            Courses = new List<string>
-            {
-                "Math",
-                "Physics"
-            }
-        });
-        hashTable.Insert(new Student
-        {
-            User = "user3",
-            Name = "Charlie",
-            Courses = new List<string>
-            {
-                "Math",
-                "Chemistry"
-            }
-        });
-
-        // Buscar estudiante
-        Student foundStudent = hashTable.Search("user2");
-        if (foundStudent != null)
-        {
-            Console.WriteLine($"Estudiante encontrado: {foundStudent.Name}");
-        }
-        else
-        {
-            Console.WriteLine("Estudiante no encontrado.");
-        }
-
-        // Editar estudiante
-        Student updatedStudent = new Student
-        {
-            User = "user2",
-
-
-            Name = "Bob Updated",
-            Courses = new List<string>
-            {
-                "Math",
-                "Physics",
-                "Biology"
-            }
-        };
-        bool editResult = hashTable.EditStudent("user2", updatedStudent);
-        if (editResult)
-        {
-            Console.WriteLine("Estudiante editado exitosamente.");
-        }
-        else
-        {
-            Console.WriteLine("No se pudo editar el estudiante.");
-        }
-
-        // Eliminar estudiante
-        bool deleteResult = hashTable.Delete("user3");
-        if (deleteResult)
-        {
-            Console.WriteLine("Estudiante eliminado exitosamente.");
-        }
-        else
-        {
-            Console.WriteLine("No se pudo eliminar el estudiante.");
-        }
-
-        // Obtener todos los estudiantes
-        List<Student> allStudents = hashTable.GetAllStudents();
-        Console.WriteLine("Todos los estudiantes:");
-        foreach (var student in allStudents)
-        {
-            Console.WriteLine($"User: {student.User}, Name: {student.Name}");
-        }
-        
-    }
-}
-        
