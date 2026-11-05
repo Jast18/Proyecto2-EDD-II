@@ -1,154 +1,125 @@
 using System;
 
-// Estructura NUCLEAR: guarda el Student completo y lo localiza por su llave primaria (User).
-// Direccionamiento abierto, sondeo lineal con módulo (circular), marcas de borrado (tombstones)
-// y redimensionado cuando el factor de carga (ocupados + borrados) supera 0.7.
+// Estructura NUCLEAR: guarda el User completo y lo localiza por su llave primaria (Username).
+// Encadenamiento separado: cada casilla es una LinkedList<User> (la del proyecto, en Auxiliar/).
+// Se redimensiona (x2) cuando el factor de carga supera 0.75.
 class HashTable
 {
-    private const byte VACIO = 0, OCUPADO = 1, BORRADO = 2;
-
-    private Student[] tabla;
-    private byte[] estado;
+    private LinkedList<User>[] tabla;
     private int capacidad;
-    private int cantidad;   // elementos vivos
-    private int usados;     // vivos + tombstones (lo que realmente ensucia la tabla)
+    private int cantidad;
+    private int siguienteId;   // contador de Id únicos (nunca se reutilizan)
 
     public int Cantidad { get { return cantidad; } }
     public int Capacidad { get { return capacidad; } }
-    public double FactorCarga { get { return (double)usados / capacidad; } }
+    public double FactorCarga { get { return (double)cantidad / capacidad; } }
 
     public HashTable(int capacidadInicial = 16)
     {
         capacidad = Math.Max(8, capacidadInicial);
-        tabla = new Student[capacidad];
-        estado = new byte[capacidad];
+        tabla = new LinkedList<User>[capacidad];
     }
 
-    // Devuelve la posición (o -1) y cuántos sondeos hicieron falta.
-    private (int pos, int sondeos) Localizar(string user)
+    private void Redimensionar()
     {
-        if (user == null) return (-1, 0);
-        int i = Util.Hash(user) % capacidad;
-        int sondeos = 0;
-        for (int n = 0; n < capacidad; n++)
+        LinkedList<User>[] vieja = tabla;
+        capacidad *= 2;
+        tabla = new LinkedList<User>[capacidad];
+        foreach (LinkedList<User> cadena in vieja)
         {
-            sondeos++;
-            if (estado[i] == VACIO) return (-1, sondeos);
-            if (estado[i] == OCUPADO && tabla[i].User == user) return (i, sondeos);
-            i = (i + 1) % capacidad;
-        }
-        return (-1, sondeos);
-    }
-
-    private void Redimensionar(int nuevaCapacidad)
-    {
-        Student[] viejaTabla = tabla;
-        byte[] viejoEstado = estado;
-
-        capacidad = nuevaCapacidad;
-        tabla = new Student[capacidad];
-        estado = new byte[capacidad];
-        cantidad = 0;
-        usados = 0;
-
-        for (int k = 0; k < viejaTabla.Length; k++)
-        {
-            if (viejoEstado[k] != OCUPADO) continue;
-            int i = Util.Hash(viejaTabla[k].User) % capacidad;
-            while (estado[i] != VACIO) i = (i + 1) % capacidad;
-            tabla[i] = viejaTabla[k];
-            estado[i] = OCUPADO;
-            cantidad++;
-            usados++;
+            if (cadena == null) continue;
+            foreach (User u in cadena.ToArray())
+            {
+                int i = Util.Hash(u.Username) % capacidad;
+                if (tabla[i] == null) tabla[i] = new LinkedList<User>();
+                tabla[i].AddLast(u);
+            }
         }
     }
 
-    // Inserta. Si la llave ya existe NO sobrescribe (devuelve insertado=false y la posición existente).
-    public (bool insertado, int indice, int sondeos, bool redimensionado) Insertar(Student s)
+    // Inserta. Si la llave ya existe NO sobrescribe. largoCadena = tamaño de la cadena donde quedó.
+    public (bool insertado, int indice, int largoCadena, bool redimensionado) Insertar(User u)
     {
-        if (s == null || string.IsNullOrWhiteSpace(s.User)) return (false, -1, 0, false);
-        s.User = Util.Norm(s.User);
+        if (u == null || string.IsNullOrWhiteSpace(u.Username)) return (false, -1, 0, false);
+        string key = Util.Norm(u.Username);
+        u.Username = key;
 
-        var existente = Localizar(s.User);
-        if (existente.pos >= 0) return (false, existente.pos, existente.sondeos, false);
+        int i = Util.Hash(key) % capacidad;
+        if (tabla[i] != null && tabla[i].Find(x => x.Username == key) != null)
+            return (false, i, tabla[i].Count, false);
 
         bool redim = false;
-        if ((usados + 1) * 10 > capacidad * 7)
+        if ((cantidad + 1) * 4 > capacidad * 3)
         {
-            // Si hay muchos tombstones basta con limpiar; si hay muchos vivos, se duplica.
-            Redimensionar((cantidad + 1) * 2 > capacidad ? capacidad * 2 : capacidad);
+            Redimensionar();
             redim = true;
+            i = Util.Hash(key) % capacidad;
         }
 
-        int i = Util.Hash(s.User) % capacidad;
-        int sondeos = 0;
-        int primerBorrado = -1;
-        while (true)
-        {
-            sondeos++;
-            if (estado[i] == VACIO)
-            {
-                int pos = primerBorrado >= 0 ? primerBorrado : i;
-                if (primerBorrado < 0) usados++;   // reutilizar un tombstone no ensucia más
-                tabla[pos] = s;
-                estado[pos] = OCUPADO;
-                cantidad++;
-                return (true, pos, sondeos, redim);
-            }
-            if (estado[i] == BORRADO && primerBorrado < 0) primerBorrado = i;
-            i = (i + 1) % capacidad;
-        }
+        if (tabla[i] == null) tabla[i] = new LinkedList<User>();
+        u.Id = siguienteId++;
+        tabla[i].AddLast(u);
+        cantidad++;
+        return (true, i, tabla[i].Count, redim);
     }
 
-    public (bool encontrado, Student estudiante, int sondeos) Buscar(string user)
+    public (bool encontrado, User usuario, int largoCadena) Buscar(string username)
     {
-        var r = Localizar(Util.Norm(user));
-        return r.pos >= 0 ? (true, tabla[r.pos], r.sondeos) : (false, null, r.sondeos);
+        string key = Util.Norm(username);
+        if (key == null) return (false, null, 0);
+        int i = Util.Hash(key) % capacidad;
+        if (tabla[i] == null) return (false, null, 0);
+        User u = tabla[i].Find(x => x.Username == key);
+        return (u != null, u, tabla[i].Count);
     }
 
-    public bool Existe(string user)
+    public bool Existe(string username)
     {
-        return Localizar(Util.Norm(user)).pos >= 0;
+        return Buscar(username).encontrado;
     }
 
-    public (bool eliminado, Student estudiante) Eliminar(string user)
+    public (bool eliminado, User usuario) Eliminar(string username)
     {
-        var r = Localizar(Util.Norm(user));
-        if (r.pos < 0) return (false, null);
-        Student quitado = tabla[r.pos];
-        tabla[r.pos] = null;
-        estado[r.pos] = BORRADO;   // tombstone: no rompe las cadenas de sondeo de otras llaves
+        string key = Util.Norm(username);
+        var r = Buscar(key);
+        if (!r.encontrado) return (false, null);
+        tabla[Util.Hash(key) % capacidad].Remove(x => x.Username == key);
         cantidad--;
-        return (true, quitado);
+        return (true, r.usuario);
     }
 
     // Reemplaza los datos manteniendo la llave primaria. Devuelve el registro anterior.
-    public (bool editado, Student anterior) Editar(string user, Student nuevo)
+    public (bool editado, User anterior) Editar(string username, User nuevo)
     {
-        user = Util.Norm(user);
-        var r = Localizar(user);
-        if (r.pos < 0 || nuevo == null) return (false, null);
-        Student anterior = tabla[r.pos];
-        nuevo.User = user;                 // la llave primaria no se cambia
-        tabla[r.pos] = nuevo;
-        return (true, anterior);
+        string key = Util.Norm(username);
+        var r = Buscar(key);
+        if (!r.encontrado || nuevo == null) return (false, null);
+        LinkedList<User> cadena = tabla[Util.Hash(key) % capacidad];
+        cadena.Remove(x => x.Username == key);
+        nuevo.Username = key;                 // la llave primaria no se cambia
+        nuevo.Id = r.usuario.Id;              // ni el Id del vértice
+        cadena.AddLast(nuevo);
+        return (true, r.usuario);
     }
 
     // Contador de visitas (insumo de la recomendación por visitas frecuentes).
-    public (bool exito, int visitas) RegistrarVisita(string user)
+    public (bool exito, int visitas) RegistrarVisita(string username)
     {
-        var r = Localizar(Util.Norm(user));
-        if (r.pos < 0) return (false, 0);
-        tabla[r.pos].Visits++;
-        return (true, tabla[r.pos].Visits);
+        var r = Buscar(username);
+        if (!r.encontrado) return (false, 0);
+        r.usuario.Visits++;
+        return (true, r.usuario.Visits);
     }
 
-    public Student[] ObtenerTodos()
+    public User[] ObtenerTodos()
     {
-        Student[] res = new Student[cantidad];
+        User[] res = new User[cantidad];
         int n = 0;
-        for (int i = 0; i < capacidad; i++)
-            if (estado[i] == OCUPADO) res[n++] = tabla[i];
+        foreach (LinkedList<User> cadena in tabla)
+        {
+            if (cadena == null) continue;
+            foreach (User u in cadena.ToArray()) res[n++] = u;
+        }
         return res;
     }
 }
