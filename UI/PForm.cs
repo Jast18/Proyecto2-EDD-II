@@ -1,30 +1,28 @@
 //Principal Form
-//Menu, buscador, perfil y panelde camino
+//Menu, buscador, perfil y panel de camino
 
 using System;
 using System.Drawing;
 using System.IO;
 using System.Text;
 using System.Windows.Forms;
-using RedSocial.Models;
-using RedSocial.Servicios;
 
 namespace RedSocial.UI
 {
     /// <summary>
     /// Ventana principal (ver boceto): menú lateral, buscador con autocompletado (Trie),
     /// perfil (Tabla Hash), grafo (Grafo + Union-Find) y panel de camino más fuerte (Dijkstra).
-    /// La UI SOLO habla con RedSocialService; nunca toca las estructuras directamente.
+    /// La UI SOLO habla con SNS; nunca modifica las estructuras directamente.
     /// </summary>
-    public class PForm : Form
+    class PForm : Form
     {
-        private readonly RedSocialService servicio = new RedSocialService();
+        private SNS sns = new SNS();   // se reemplaza al cargar otros archivos
 
         private TextBox txtBuscar, txtOrigen, txtDestino;
         private ListBox lstSugerencias;
         private Label lblUsuario, lblNombre, lblDetalle, lblResultado, lblAmistad, lblEstado;
         private GPanel grafo;
-        private Usuario usuarioActual;
+        private User usuarioActual;
         private bool actualizandoTexto; // evita que TextChanged se dispare al poner texto por código
 
         public PForm()
@@ -62,6 +60,13 @@ namespace RedSocial.UI
             Controls.Add(lstSugerencias);
             lstSugerencias.BringToFront();
 
+            CargarPorDefecto();
+        }
+
+        // Intenta cargar Data/user.csv y Data/relations.csv al abrir. Si no existen, arranca vacío.
+        private void CargarPorDefecto()
+        {
+            try { sns.Cargar(); } catch (Exception) { }
             RefrescarGrafo();
         }
 
@@ -84,11 +89,12 @@ namespace RedSocial.UI
             AgregarOpcion(flujo, "Buscar usuario", () => txtBuscar.Focus());
             AgregarOpcion(flujo, "Registrar usuario", AccionRegistrar);
             AgregarOpcion(flujo, "Agregar relación", AccionRelacion);
-            AgregarOpcion(flujo, "Camino más fuerte", () => txtOrigen.Focus());
+            AgregarOpcion(flujo, "Sugerencias de amistad", () => txtOrigen.Focus());   // antes: "Camino más fuerte" (nota de Pablo Q)
             AgregarOpcion(flujo, "Comunidades", AccionComunidades);
             AgregarOpcion(flujo, "Recorridos BFS / DFS", AccionRecorrido);
             AgregarOpcion(flujo, "Ver estructuras", AccionVerEstructuras);
             AgregarOpcion(flujo, "Cargar datos (CSV / TXT)", AccionCargar);
+            AgregarOpcion(flujo, "Guardar datos (CSV)", AccionGuardar);
             AgregarOpcion(flujo, "Eliminar usuario", AccionEliminar);
 
             var cont = new Panel(); // contenedor para poder usar el borde derecho
@@ -218,7 +224,7 @@ namespace RedSocial.UI
 
             // Camino más fuerte (Dijkstra)
             FlowLayoutPanel c1 = Tarjeta(new Padding(0, 0, 0, 10));
-            c1.Controls.Add(Etiqueta("CAMINO MÁS FUERTE · DIJKSTRA", Tema.Pequena, Tema.TextoSuave, 290));
+            c1.Controls.Add(Etiqueta("SUGERENCIAS DE AMISTAD · DIJKSTRA", Tema.Pequena, Tema.TextoSuave, 290));
             c1.Controls.Add(Etiqueta("Origen", Tema.Normal, Tema.Texto, 290));
             txtOrigen = new TextBox(); txtOrigen.Width = 290; txtOrigen.Margin = new Padding(0, 0, 0, 8);
             c1.Controls.Add(txtOrigen);
@@ -250,7 +256,7 @@ namespace RedSocial.UI
             if (prefijo.Length == 0) { lstSugerencias.Visible = false; return; }
 
             string[] sugeridos = null;
-            try { sugeridos = servicio.Sugerir(prefijo); }
+            try { sugeridos = sns.Buscar(prefijo, 7).sugerencias; }
             catch (Exception) { sugeridos = null; } // silencioso: no queremos un mensaje por cada tecla
 
             if (sugeridos == null || sugeridos.Length == 0) { lstSugerencias.Visible = false; return; }
@@ -294,27 +300,30 @@ namespace RedSocial.UI
         private void MostrarPerfil(string username)
         {
             if (username.Length == 0) return;
-            Usuario u = null;
-            if (!Ejecutar(() => u = servicio.BuscarPerfil(username))) return; // incrementa visitas
-            if (u == null) { lblEstado.Text = "No se encontró el usuario '" + username + "'."; return; }
+            (bool encontrado, User perfil, int visitas) r = default;
+            if (!Ejecutar(() => r = sns.Perfil(username))) return;   // incrementa visitas
+            if (!r.encontrado) { lblEstado.Text = "No se encontró el usuario '" + username + "'."; return; }
 
+            User u = r.perfil;
             usuarioActual = u;
             lblUsuario.Text = "@" + u.Username;
-            lblNombre.Text = u.Nombre;
-            lblDetalle.Text = "Música: " + u.Musica + "\nCarrera: " + u.Carrera + "\nCursos: " + u.Cursos +
-                              "\nAño: " + u.Anio + "\nVisitas al perfil: " + u.Visitas;
-            grafo.Seleccionar(u.Id);
+            lblNombre.Text = u.Name;
+            int amigos = sns.Amigos(u.Username).usuarios.Length;
+            lblDetalle.Text = "Música: " + u.Music + "\nCarrera: " + u.Career + "\nCursos: " + string.Join(", ", u.Courses) +
+                              "\nAño: " + u.Year + "\nVisitas al perfil: " + r.visitas + " · Amigos: " + amigos;
+            grafo.Seleccionar(u.Username);
             lblEstado.Text = "Perfil de @" + u.Username + " localizado (Trie → Tabla Hash).";
 
             string texto = "Sin sugerencias por ahora.";
             try
             {
-                Usuario[] sug = servicio.SugerenciasAmistad(u.Username);
-                if (sug != null && sug.Length > 0)
+                var sug = sns.SugerenciasDeAmistad(u.Username, 5);
+                if (sug.candidatos.Length > 0)
                 {
                     var sb = new StringBuilder();
-                    for (int i = 0; i < sug.Length; i++)
-                        sb.Append("• @").Append(sug[i].Username).Append("  (").Append(sug[i].Visitas).Append(" visitas)\n");
+                    if (amigos == 0) sb.Append("Sin conexiones aún; usuarios más conectados:\n");
+                    for (int i = 0; i < sug.candidatos.Length; i++)
+                        sb.Append("• @").Append(sug.candidatos[i]).Append("  (puntaje ").Append(sug.puntajes[i]).Append(")\n");
                     texto = sb.ToString();
                 }
             }
@@ -324,34 +333,42 @@ namespace RedSocial.UI
 
         // =====================  ACCIONES DEL MENÚ  =====================
 
+        private static string[] Lista(string texto)
+        {
+            string[] partes = texto.Split(new char[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < partes.Length; i++) partes[i] = partes[i].Trim();
+            return partes;
+        }
+
         private void AccionRegistrar()
         {
             string[] v = DialogoCampos.Pedir(this, "Registrar usuario", new string[]
-                { "Username (único)", "Nombre completo", "Música favorita", "Carrera", "Cursos", "Año (número)" });
+                { "Username (único, sin tildes)", "Nombre completo", "Música favorita", "Carrera", "Cursos (separados por ;)", "Año (número)" });
             if (v == null) return;
             int anio = 0;
             if (v[0].Length == 0 || !int.TryParse(v[5], out anio)) { Aviso("El username es obligatorio y el año debe ser un número."); return; }
 
-            if (Ejecutar(() => servicio.RegistrarUsuario(new Usuario(v[0], v[1], v[2], v[3], v[4], anio))))
-            {
-                RefrescarGrafo();
-                lblEstado.Text = "Usuario @" + v[0] + " registrado (Hash, Trie, Grafo y Union-Find).";
-            }
+            User nuevo = new User { Username = v[0], Name = v[1], Music = v[2], Career = v[3], Courses = Lista(v[4]), Year = anio };
+            (bool ok, string motivo) r = default;
+            if (!Ejecutar(() => r = sns.Registrar(nuevo))) return;
+            if (!r.ok) { Aviso(r.motivo); return; }
+
+            RefrescarGrafo();
+            lblEstado.Text = "Usuario @" + nuevo.Username + " registrado (Hash, Trie, Grafo y Union-Find).";
         }
 
         private void AccionRelacion()
         {
-            string[] v = DialogoCampos.Pedir(this, "Agregar relación", new string[]
-                { "Usuario A", "Usuario B", "Tipo: A = amistad (ambos sentidos), S = seguir (un sentido)" });
+            string[] v = DialogoCampos.Pedir(this, "Agregar relación", new string[] { "Usuario A", "Usuario B" });
             if (v == null) return;
             if (v[0].Length == 0 || v[1].Length == 0) { Aviso("Escribe ambos usernames."); return; }
-            bool dirigida = v[2].ToUpper() == "S";
 
-            if (Ejecutar(() => servicio.AgregarRelacion(v[0], v[1], dirigida)))
-            {
-                RefrescarGrafo();
-                lblEstado.Text = "Relación agregada entre @" + v[0] + " y @" + v[1] + ".";
-            }
+            (bool ok, int afinidad, string motivo) r = default;
+            if (!Ejecutar(() => r = sns.AgregarRelacion(v[0], v[1]))) return;
+            if (!r.ok) { Aviso(r.motivo); return; }
+
+            RefrescarGrafo();
+            lblEstado.Text = "Relación agregada entre @" + v[0] + " y @" + v[1] + " (afinidad " + r.afinidad + "%).";
         }
 
         private void CalcularCamino()
@@ -359,32 +376,31 @@ namespace RedSocial.UI
             string a = txtOrigen.Text.Trim(), b = txtDestino.Text.Trim();
             if (a.Length == 0 || b.Length == 0) { Aviso("Indica origen y destino."); return; }
 
-            ResultadoCamino r = null;
-            if (!Ejecutar(() => r = servicio.CaminoMasFuerte(a, b))) return;
+            (bool ok, string motivo, string[] camino, int costo, int afinidadPromedio) r = default;
+            if (!Ejecutar(() => r = sns.CaminoMasFuerte(a, b))) return;
 
-            if (r == null || r.Camino == null || r.Camino.Length == 0)
+            if (!r.ok || r.camino.Length == 0)
             {
                 grafo.ResaltarCamino(null);
-                lblResultado.Text = (r != null && !string.IsNullOrEmpty(r.Mensaje))
-                    ? r.Mensaje : "No existe un camino entre ambos usuarios.";
+                lblResultado.Text = string.IsNullOrEmpty(r.motivo) ? "No existe un camino entre ambos usuarios." : r.motivo;
                 return;
             }
-            grafo.ResaltarCamino(r.Camino);
-            lblResultado.Text = "Union-Find: misma comunidad.\n" + string.Join(" → ", NombresDe(r.Camino)) +
-                                "\nAfinidad promedio: " + r.AfinidadPromedio + "%\nCosto total: " + r.CostoTotal;
+            grafo.ResaltarCamino(r.camino);
+            lblResultado.Text = "Union-Find: misma comunidad.\n" + string.Join(" → ", r.camino) +
+                                "\nAfinidad promedio: " + r.afinidadPromedio + "%\nCosto total: " + r.costo;
             lblEstado.Text = "Camino calculado con Dijkstra.";
         }
 
         private void AccionComunidades()
         {
-            int[][] grupos = null;
-            if (!Ejecutar(() => grupos = servicio.ObtenerComunidades())) return;
+            string[][] grupos = null;
+            if (!Ejecutar(() => grupos = sns.ObtenerComunidades().grupos)) return;
             grafo.ColorearComunidades(grupos);
 
             var sb = new StringBuilder();
-            if (grupos != null)
-                for (int i = 0; i < grupos.Length; i++)
-                    sb.Append("Comunidad ").Append(i + 1).Append(": ").Append(string.Join(", ", NombresDe(grupos[i]))).Append("\r\n");
+            for (int i = 0; i < grupos.Length; i++)
+                sb.Append("Comunidad ").Append(i + 1).Append(" (").Append(grupos[i].Length).Append("): ")
+                  .Append(string.Join(", ", grupos[i])).Append("\r\n");
             MostrarTexto("Comunidades (Union-Find)", sb.ToString());
         }
 
@@ -396,10 +412,10 @@ namespace RedSocial.UI
             bool bfs = v[1].ToUpper() == "BFS";
             if (!bfs && v[1].ToUpper() != "DFS") { Aviso("Escribe BFS o DFS."); return; }
 
-            int[] orden = null;
-            if (!Ejecutar(() => orden = bfs ? servicio.RecorridoBFS(v[0]) : servicio.RecorridoDFS(v[0]))) return;
-            if (orden == null || orden.Length == 0) { Aviso("No se encontró el usuario o no tiene conexiones."); return; }
-            MostrarTexto("Recorrido " + v[1].ToUpper() + " desde @" + v[0], string.Join(" → ", NombresDe(orden)));
+            string[] orden = null;
+            if (!Ejecutar(() => { var r = sns.Recorrer(v[0]); orden = bfs ? r.bfs : r.dfs; })) return;
+            if (orden == null || orden.Length == 0) { Aviso("No se encontró el usuario."); return; }
+            MostrarTexto("Recorrido " + v[1].ToUpper() + " desde @" + v[0], string.Join(" → ", orden));
         }
 
         private void AccionVerEstructuras()
@@ -407,29 +423,31 @@ namespace RedSocial.UI
             var sb = new StringBuilder();
             bool ok = Ejecutar(() =>
             {
-                Usuario[] us = servicio.ObtenerUsuarios();
+                User[] us = sns.Usuarios.ObtenerTodos();
                 sb.Append("== TABLA HASH (perfiles) ==\r\n");
+                sb.Append(sns.Usuarios.Cantidad).Append(" usuarios | capacidad ").Append(sns.Usuarios.Capacidad)
+                  .Append(" | factor de carga ").Append(sns.Usuarios.FactorCarga.ToString("F2")).Append("\r\n");
                 for (int i = 0; i < us.Length; i++)
-                    sb.Append("[").Append(us[i].Id).Append("] ").Append(us[i].Username).Append(" | ").Append(us[i].Nombre)
-                      .Append(" | ").Append(us[i].Musica).Append(" | ").Append(us[i].Carrera).Append(" | ")
-                      .Append(us[i].Cursos).Append(" | año ").Append(us[i].Anio).Append(" | visitas ").Append(us[i].Visitas).Append("\r\n");
+                    sb.Append("[").Append(us[i].Id).Append("] ").Append(us[i].Username).Append(" | ").Append(us[i].Name)
+                      .Append(" | ").Append(us[i].Music).Append(" | ").Append(us[i].Career).Append(" | ")
+                      .Append(string.Join("; ", us[i].Courses)).Append(" | año ").Append(us[i].Year)
+                      .Append(" | visitas ").Append(us[i].Visits).Append("\r\n");
 
                 sb.Append("\r\n== TRIE (usernames) ==\r\n");
-                string[] palabras = servicio.ListarUsernamesTrie();
-                sb.Append(string.Join(", ", palabras)).Append("\r\n");
+                sb.Append(string.Join(", ", sns.Buscar("", Math.Max(1, us.Length)).sugerencias)).Append("\r\n");
 
                 sb.Append("\r\n== UNION-FIND (comunidades) ==\r\n");
-                int[][] grupos = servicio.ObtenerComunidades();
+                string[][] grupos = sns.ObtenerComunidades().grupos;
                 for (int i = 0; i < grupos.Length; i++)
-                    sb.Append("Comunidad ").Append(i + 1).Append(": ").Append(string.Join(", ", NombresDe(grupos[i]))).Append("\r\n");
+                    sb.Append("Comunidad ").Append(i + 1).Append(": ").Append(string.Join(", ", grupos[i])).Append("\r\n");
 
                 sb.Append("\r\n== GRAFO (lista de adyacencia) ==\r\n");
                 for (int i = 0; i < us.Length; i++)
                 {
                     sb.Append(us[i].Username).Append(" -> ");
-                    Arista[] vs = servicio.ObtenerRelaciones(us[i].Id);
-                    for (int k = 0; k < vs.Length; k++)
-                        sb.Append(NombresDe(new int[] { vs[k].Destino })[0]).Append("(").Append(vs[k].Afinidad).Append("%)  ");
+                    var ar = sns.Amigos(us[i].Username);
+                    for (int k = 0; k < ar.usuarios.Length; k++)
+                        sb.Append(ar.usuarios[k]).Append("(").Append(ar.afinidades[k]).Append("%)  ");
                     sb.Append("\r\n");
                 }
             });
@@ -438,7 +456,7 @@ namespace RedSocial.UI
 
         private void AccionCargar()
         {
-            string carpeta = Path.Combine(AppContext.BaseDirectory, "Datos");
+            string carpeta = Path.Combine(AppContext.BaseDirectory, "Data");
             string rutaUsuarios, rutaRelaciones = null;
 
             using (var dlg = new OpenFileDialog())
@@ -457,11 +475,26 @@ namespace RedSocial.UI
                 if (dlg.ShowDialog(this) == DialogResult.OK) rutaRelaciones = dlg.FileName;
             }
 
-            if (Ejecutar(() => servicio.CargarDesdeCsv(rutaUsuarios, rutaRelaciones)))
-            {
-                RefrescarGrafo();
-                lblEstado.Text = "Datos cargados desde " + Path.GetFileName(rutaUsuarios) + ".";
-            }
+            // Cargar reemplaza los datos actuales por los de los archivos elegidos
+            // (y Guardar escribirá de vuelta en esos mismos archivos).
+            SNS nuevo = new SNS(rutaUsuarios, rutaRelaciones ?? "");
+            (int usuarios, int relaciones, int comunidades, string error) r = default;
+            if (!Ejecutar(() => r = nuevo.Cargar())) return;
+            if (r.error != null && rutaRelaciones != null) { Aviso(r.error); }
+
+            sns = nuevo;
+            usuarioActual = null;
+            RefrescarGrafo();
+            lblEstado.Text = "Cargados " + r.usuarios + " usuarios y " + r.relaciones + " relaciones; " +
+                             r.comunidades + " comunidades.";
+        }
+
+        private void AccionGuardar()
+        {
+            (bool ok, string error) r = default;
+            if (!Ejecutar(() => r = sns.Guardar())) return;
+            if (!r.ok) { Aviso("No se pudo guardar: " + r.error); return; }
+            lblEstado.Text = "Datos guardados en los CSV.";
         }
 
         private void AccionEliminar()
@@ -471,27 +504,29 @@ namespace RedSocial.UI
             if (MessageBox.Show(this, "¿Eliminar a @" + v[0] + " y todas sus relaciones?", "Confirmar",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
 
-            bool eliminado = false;
-            if (Ejecutar(() => eliminado = servicio.EliminarUsuario(v[0])))
-            {
-                lblEstado.Text = eliminado ? "Usuario @" + v[0] + " eliminado." : "No se encontró @" + v[0] + ".";
-                if (usuarioActual != null && usuarioActual.Username == v[0]) usuarioActual = null;
-                RefrescarGrafo();
-            }
+            (bool ok, string motivo) r = default;
+            if (!Ejecutar(() => r = sns.Eliminar(v[0]))) return;
+            if (!r.ok) { Aviso(r.motivo); return; }
+
+            lblEstado.Text = "Usuario @" + v[0] + " eliminado.";
+            if (usuarioActual != null && string.Equals(usuarioActual.Username, v[0].Trim(), StringComparison.OrdinalIgnoreCase))
+                usuarioActual = null;
+            RefrescarGrafo();
         }
 
         // =====================  UTILIDADES  =====================
 
-        /// <summary>Redibuja el grafo con los datos actuales. Es silencioso si la lógica aún no está implementada.</summary>
+        /// <summary>Redibuja el grafo con los datos actuales.</summary>
         private void RefrescarGrafo()
         {
             try
             {
-                Usuario[] us = servicio.ObtenerUsuarios();
-                grafo.Cargar(us, id => servicio.ObtenerRelaciones(id));
+                User[] us = sns.Usuarios.ObtenerTodos();
+                Array.Sort(us, (a, b) => a.Id.CompareTo(b.Id));   // orden estable (el de inserción) para el dibujo
+                grafo.Cargar(us, nombre => sns.Amigos(nombre).usuarios);
                 lblEstado.Text = us.Length + " usuarios en la red.";
             }
-            catch (Exception) { grafo.Cargar(new Usuario[0], null); }
+            catch (Exception) { grafo.Cargar(new User[0], null); }
         }
 
         /// <summary>Ejecuta una acción del servicio mostrando avisos amigables si algo falla.</summary>
@@ -513,18 +548,6 @@ namespace RedSocial.UI
         private void Aviso(string mensaje)
         {
             MessageBox.Show(this, mensaje, "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-
-        private string[] NombresDe(int[] ids)
-        {
-            string[] r = new string[ids.Length];
-            for (int i = 0; i < ids.Length; i++)
-            {
-                Usuario u = null;
-                try { u = servicio.ObtenerPorId(ids[i]); } catch (Exception) { }
-                r[i] = u != null ? u.Username : "#" + ids[i];
-            }
-            return r;
         }
 
         /// <summary>Ventana simple de solo lectura para mostrar listados largos.</summary>

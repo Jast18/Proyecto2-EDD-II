@@ -1,30 +1,31 @@
 //Graph Panel
 
-//Posible graficación del grafo en interfaz
+//Graficación del grafo en la interfaz
 
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
-using RedSocial.Models;
 
 namespace RedSocial.UI
 {
     /// <summary>
-    /// Dibuja el grafo con GDI+. No conoce las estructuras: solo recibe usuarios y una función
-    /// que devuelve los vecinos de un Id. Cada criterio compartido se dibuja como una línea de color
-    /// (multigrafo, como en el boceto). Las relaciones dirigidas llevan flecha.
+    /// Dibuja el grafo con GDI+. No conoce las estructuras: solo recibe los usuarios y una función
+    /// que devuelve los usernames vecinos de un username. Cada criterio compartido entre dos usuarios
+    /// (música, carrera, cursos, año) se dibuja como una línea de color (multigrafo, como en el boceto);
+    /// los criterios salen de AC.Calcular. Las relaciones son de amistad (no dirigidas).
     /// </summary>
-    public class GPanel : Panel
+    class GPanel : Panel
     {
         private const float R = 24f; // radio del nodo
 
-        private Usuario[] usuarios = new Usuario[0];
-        private Func<int, Arista[]> obtenerVecinos;
-        private int[] indicePorId = new int[0];
-        private int[] camino;        // Ids del camino de Dijkstra a resaltar
-        private int[] comunidadDe;   // comunidadDe[id] = número de comunidad (o -1)
-        private int seleccionado = -1;
+        private User[] usuarios = new User[0];
+        private Func<string, string[]> obtenerVecinos;
+        private Dictionary<string, int> indicePorUser = new Dictionary<string, int>();
+        private string[] camino;        // usernames del camino de Dijkstra a resaltar
+        private int[] comunidadDe;      // comunidadDe[posición del usuario] = número de comunidad (o -1)
+        private string seleccionado;
 
         private static readonly Color[] Paleta =
         {
@@ -34,7 +35,7 @@ namespace RedSocial.UI
         };
 
         /// <summary>Se dispara al hacer clic sobre un nodo.</summary>
-        public event Action<Usuario> NodoClic;
+        public event Action<User> NodoClic;
 
         public GPanel()
         {
@@ -44,32 +45,32 @@ namespace RedSocial.UI
         }
 
         // ---------- API pública ----------
-        public void Cargar(Usuario[] lista, Func<int, Arista[]> vecinos)
+        public void Cargar(User[] lista, Func<string, string[]> vecinos)
         {
-            usuarios = lista ?? new Usuario[0];
+            usuarios = lista ?? new User[0];
             obtenerVecinos = vecinos;
             camino = null; comunidadDe = null;
 
-            int max = -1;
-            for (int i = 0; i < usuarios.Length; i++) if (usuarios[i].Id > max) max = usuarios[i].Id;
-            indicePorId = new int[max + 1];
-            for (int i = 0; i < indicePorId.Length; i++) indicePorId[i] = -1;
-            for (int i = 0; i < usuarios.Length; i++) indicePorId[usuarios[i].Id] = i;
+            indicePorUser = new Dictionary<string, int>();
+            for (int i = 0; i < usuarios.Length; i++) indicePorUser[usuarios[i].Username] = i;
             Invalidate();
         }
 
-        public void ResaltarCamino(int[] ids) { camino = ids; Invalidate(); }
-        public void Seleccionar(int id) { seleccionado = id; Invalidate(); }
+        public void ResaltarCamino(string[] usernames) { camino = usernames; Invalidate(); }
+        public void Seleccionar(string username) { seleccionado = username; Invalidate(); }
 
         /// <summary>Pinta cada comunidad de un color. Pasar null para quitar los colores.</summary>
-        public void ColorearComunidades(int[][] grupos)
+        public void ColorearComunidades(string[][] grupos)
         {
             if (grupos == null) { comunidadDe = null; Invalidate(); return; }
-            comunidadDe = new int[indicePorId.Length];
+            comunidadDe = new int[usuarios.Length];
             for (int i = 0; i < comunidadDe.Length; i++) comunidadDe[i] = -1;
             for (int k = 0; k < grupos.Length; k++)
                 for (int m = 0; m < grupos[k].Length; m++)
-                    if (grupos[k][m] >= 0 && grupos[k][m] < comunidadDe.Length) comunidadDe[grupos[k][m]] = k;
+                {
+                    int idx = Indice(grupos[k][m]);
+                    if (idx >= 0) comunidadDe[idx] = k;
+                }
             Invalidate();
         }
 
@@ -91,14 +92,12 @@ namespace RedSocial.UI
             PointF[] pos = Posiciones();
             for (int i = 0; i < usuarios.Length; i++)
             {
-                Arista[] vecinos = Vecinos(usuarios[i].Id);
+                string[] vecinos = Vecinos(usuarios[i].Username);
                 for (int k = 0; k < vecinos.Length; k++)
                 {
-                    int j = Indice(vecinos[k].Destino);
-                    if (j < 0) continue;
-                    bool inverso = ExisteArista(vecinos[k].Destino, usuarios[i].Id);
-                    if (inverso && usuarios[i].Id > vecinos[k].Destino) continue; // evita dibujar dos veces la no dirigida
-                    DibujarArista(g, pos[i], pos[j], vecinos[k], !inverso);
+                    int j = Indice(vecinos[k]);
+                    if (j <= i) continue; // la relación es no dirigida: se dibuja una sola vez (i < j)
+                    DibujarArista(g, pos[i], pos[j], AC.Calcular(usuarios[i], usuarios[j]));
                 }
             }
             DibujarCamino(g, pos);
@@ -120,40 +119,36 @@ namespace RedSocial.UI
             return pos;
         }
 
-        private void DibujarArista(Graphics g, PointF a, PointF b, Arista ar, bool dirigida)
+        private void DibujarArista(Graphics g, PointF a, PointF b, (int puntaje, bool musica, bool carrera, bool cursos, bool anio) af)
         {
-            Color[] colores = Colores(ar);
+            Color[] colores = Colores(af.musica, af.carrera, af.cursos, af.anio);
             float dx = b.X - a.X, dy = b.Y - a.Y;
             float len = (float)Math.Sqrt(dx * dx + dy * dy);
             if (len < 1f) return;
             float ux = dx / len, uy = dy / len, nx = -uy, ny = ux;
-            PointF fin = dirigida ? new PointF(b.X - ux * R, b.Y - uy * R) : b;
 
             for (int k = 0; k < colores.Length; k++)
             {
                 float off = (k - (colores.Length - 1) / 2f) * 5f; // líneas paralelas
                 using (Pen pen = new Pen(colores[k], 3f))
-                {
-                    if (dirigida) pen.CustomEndCap = new AdjustableArrowCap(4, 4);
-                    g.DrawLine(pen, a.X + nx * off, a.Y + ny * off, fin.X + nx * off, fin.Y + ny * off);
-                }
+                    g.DrawLine(pen, a.X + nx * off, a.Y + ny * off, b.X + nx * off, b.Y + ny * off);
             }
         }
 
-        private Color[] Colores(Arista ar)
+        private Color[] Colores(bool musica, bool carrera, bool cursos, bool anio)
         {
             int c = 0;
-            if (ar.MismaMusica) c++;
-            if (ar.MismaCarrera) c++;
-            if (ar.MismosCursos) c++;
-            if (ar.MismoAnio) c++;
+            if (musica) c++;
+            if (carrera) c++;
+            if (cursos) c++;
+            if (anio) c++;
             if (c == 0) return new Color[] { Color.FromArgb(200, 205, 215) };
             Color[] r = new Color[c];
             int i = 0;
-            if (ar.MismaMusica) r[i++] = Tema.Musica;
-            if (ar.MismaCarrera) r[i++] = Tema.Carrera;
-            if (ar.MismosCursos) r[i++] = Tema.Cursos;
-            if (ar.MismoAnio) r[i++] = Tema.Anio;
+            if (musica) r[i++] = Tema.Musica;
+            if (carrera) r[i++] = Tema.Carrera;
+            if (cursos) r[i++] = Tema.Cursos;
+            if (anio) r[i++] = Tema.Anio;
             return r;
         }
 
@@ -179,14 +174,15 @@ namespace RedSocial.UI
         {
             for (int i = 0; i < usuarios.Length; i++)
             {
-                Usuario u = usuarios[i];
+                User u = usuarios[i];
                 PointF p = pos[i];
-                bool enCamino = EnCamino(u.Id);
-                using (SolidBrush relleno = new SolidBrush(ColorNodo(u.Id)))
+                bool enCamino = EnCamino(u.Username);
+                bool esSel = u.Username == seleccionado;
+                using (SolidBrush relleno = new SolidBrush(ColorNodo(i)))
                     g.FillEllipse(relleno, p.X - R, p.Y - R, 2 * R, 2 * R);
 
-                Color cb = u.Id == seleccionado ? Tema.Primario : (enCamino ? Tema.Texto : Tema.TextoSuave);
-                float grosor = u.Id == seleccionado ? 3.5f : (enCamino ? 2.5f : 1.5f);
+                Color cb = esSel ? Tema.Primario : (enCamino ? Tema.Texto : Tema.TextoSuave);
+                float grosor = esSel ? 3.5f : (enCamino ? 2.5f : 1.5f);
                 using (Pen borde = new Pen(cb, grosor))
                     g.DrawEllipse(borde, p.X - R, p.Y - R, 2 * R, 2 * R);
 
@@ -212,33 +208,30 @@ namespace RedSocial.UI
         }
 
         // ---------- Utilidades ----------
-        private Color ColorNodo(int id)
+        private Color ColorNodo(int posicion)
         {
-            if (comunidadDe != null && id < comunidadDe.Length && comunidadDe[id] >= 0)
-                return Paleta[comunidadDe[id] % Paleta.Length];
+            if (comunidadDe != null && posicion < comunidadDe.Length && comunidadDe[posicion] >= 0)
+                return Paleta[comunidadDe[posicion] % Paleta.Length];
             return Color.FromArgb(228, 232, 240);
         }
 
-        private bool EnCamino(int id)
+        private bool EnCamino(string username)
         {
             if (camino == null) return false;
-            for (int i = 0; i < camino.Length; i++) if (camino[i] == id) return true;
+            for (int i = 0; i < camino.Length; i++) if (camino[i] == username) return true;
             return false;
         }
 
-        private int Indice(int id) { return (id >= 0 && id < indicePorId.Length) ? indicePorId[id] : -1; }
-
-        private Arista[] Vecinos(int id)
+        private int Indice(string username)
         {
-            Arista[] v = obtenerVecinos == null ? null : obtenerVecinos(id);
-            return v ?? new Arista[0];
+            int i;
+            return (username != null && indicePorUser.TryGetValue(username, out i)) ? i : -1;
         }
 
-        private bool ExisteArista(int origen, int destino)
+        private string[] Vecinos(string username)
         {
-            Arista[] v = Vecinos(origen);
-            for (int i = 0; i < v.Length; i++) if (v[i].Destino == destino) return true;
-            return false;
+            string[] v = obtenerVecinos == null ? null : obtenerVecinos(username);
+            return v ?? new string[0];
         }
 
         protected override void OnMouseClick(MouseEventArgs e)
@@ -251,7 +244,7 @@ namespace RedSocial.UI
                 float dx = e.X - pos[i].X, dy = e.Y - pos[i].Y;
                 if (dx * dx + dy * dy <= R * R)
                 {
-                    seleccionado = usuarios[i].Id;
+                    seleccionado = usuarios[i].Username;
                     Invalidate();
                     if (NodoClic != null) NodoClic(usuarios[i]);
                     return;
